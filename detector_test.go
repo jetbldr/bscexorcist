@@ -1,6 +1,7 @@
 package bscexorcist
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -468,3 +469,139 @@ var (
 		},
 	}
 )
+
+// --- Regression: a single multi-hop transaction must not fabricate a sandwich ---
+//
+// PancakeV3 swap signature; reused to build synthetic V3 swap logs.
+const v3SwapSig = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"
+
+// int256Bytes encodes a signed int into a 32-byte big-endian two's-complement word,
+// matching tools.DecodeSignedInt256.
+func int256Bytes(v int64) []byte {
+	b := big.NewInt(v)
+	if v < 0 {
+		b.Add(new(big.Int).Lsh(big.NewInt(1), 256), b)
+	}
+	out := make([]byte, 32)
+	b.FillBytes(out)
+	return out
+}
+
+// v3SwapLog builds a minimal PancakeV3 Swap log. amount0>0/amount1<0 => token0->token1
+// (IsToken0To1==true, "sell token0"); amount0<0/amount1>0 => token1->token0 ("buy token0").
+func v3SwapLog(pool common.Address, amount0, amount1 int64) *types.Log {
+	data := make([]byte, 160) // amount0, amount1, sqrtPriceX96, liquidity, tick
+	copy(data[0:32], int256Bytes(amount0))
+	copy(data[32:64], int256Bytes(amount1))
+	return &types.Log{
+		Address: pool,
+		Topics:  []common.Hash{common.HexToHash(v3SwapSig)},
+		Data:    data,
+	}
+}
+
+// A honest backrun: one victim tx whose internal multi-hop routes through the same
+// pool several times in one direction, followed by independent backrun txs in the
+// opposite direction. The per-tx swaps of the victim must collapse to a single net
+// leg, so the bundle is [T, F, F, F, F] — not a sandwich.
+func TestDetectSandwichForBundle_BackrunNotFlagged(t *testing.T) {
+	pool := common.HexToAddress("0x194fb07E51EEb6FeC9Eae4edad6523F8dFF2C7eD")
+
+	victimTx := []*types.Log{
+		v3SwapLog(pool, 100, -90),
+		v3SwapLog(pool, 100, -90),
+		v3SwapLog(pool, 100, -90),
+		v3SwapLog(pool, 100, -90),
+	}
+	backrun := func() []*types.Log { return []*types.Log{v3SwapLog(pool, -100, 90)} }
+
+	bundle := [][]*types.Log{victimTx, backrun(), backrun(), backrun(), backrun()}
+
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("honest backrun must not be flagged as sandwich, got: %v", err)
+	}
+}
+
+// A classic sandwich keeps front-run and back-run in separate transactions around
+// the victim, so per-tx collapse leaves [T, T, F] intact and it is still detected.
+func TestDetectSandwichForBundle_ClassicStillDetected(t *testing.T) {
+	pool := common.HexToAddress("0x194fb07E51EEb6FeC9Eae4edad6523F8dFF2C7eD")
+
+	frontRun := []*types.Log{v3SwapLog(pool, 100, -90)} // buy (T)
+	victim := []*types.Log{v3SwapLog(pool, 100, -90)}   // buy (T)
+	backRun := []*types.Log{v3SwapLog(pool, -100, 90)}  // sell (F)
+
+	bundle := [][]*types.Log{frontRun, victim, backRun}
+
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("classic 3-tx sandwich must still be detected")
+	}
+}
+
+// --- Regression: collapse must rely only on direction, not per-protocol amounts ---
+
+const (
+	fourMemeBuySig  = "0x7db52723a3b2cdd6164364b3b766e65e540d7be48ffa89582956d8eaebe62942"
+	fourMemeSellSig = "0x0a5575b3648bae2210cee56bf33254cc1ddfbc7bf637c0af2ac18b14fb1bae19"
+)
+
+// fourMemeSwapLog builds a FourMeme swap log. FourMeme's AmountIn/AmountOut both
+// return 0, so any amount-based net direction would silently drop these swaps.
+func fourMemeSwapLog(token common.Address, buy bool) *types.Log {
+	sig := fourMemeSellSig
+	if buy {
+		sig = fourMemeBuySig
+	}
+	data := make([]byte, 32)
+	copy(data[12:32], token.Bytes()) // address occupies the low 20 bytes
+	return &types.Log{
+		Topics: []common.Hash{common.HexToHash(sig)},
+		Data:   data,
+	}
+}
+
+// FourMeme reports direction via IsToken0To1 only; a buy-buy-sell across three
+// separate transactions must still be detected.
+func TestDetectSandwichForBundle_FourMemeStillDetected(t *testing.T) {
+	token := common.HexToAddress("0x000000000000000000000000000000000000dEaD")
+	bundle := [][]*types.Log{
+		{fourMemeSwapLog(token, true)},  // buy  (T)
+		{fourMemeSwapLog(token, true)},  // buy  (T)
+		{fourMemeSwapLog(token, false)}, // sell (F)
+	}
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("FourMeme buy-buy-sell sandwich must still be detected")
+	}
+}
+
+// dodoSwapLog builds a DODO swap log. tokenFrom<tokenTo => token0->token1 (T).
+func dodoSwapLog(from, to common.Address, amountFrom, amountTo int64) *types.Log {
+	data := make([]byte, 128)
+	copy(data[12:32], from.Bytes())
+	copy(data[44:64], to.Bytes())
+	big.NewInt(amountFrom).FillBytes(data[64:96])
+	big.NewInt(amountTo).FillBytes(data[96:128])
+	return &types.Log{
+		Topics: []common.Hash{common.HexToHash("0xc2c0245e056d5fb095f04cd6373bc770802ebd1e6c918eb78fdef843cdb37b0f")},
+		Data:   data,
+	}
+}
+
+// DODO's AmountIn/AmountOut are indexed by token0/token1, not input/output, so an
+// amount-based net misattributes a reverse swap's token1 amount as token0 output.
+// A single transaction that round-trips the same DODO pool must net to no signal,
+// leaving [T, T] which is not a sandwich.
+func TestDetectSandwichForBundle_DodoRoundTripNotFlagged(t *testing.T) {
+	a := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	b := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	roundTrip := []*types.Log{
+		dodoSwapLog(a, b, 1000, 5), // T (token0 -> token1)
+		dodoSwapLog(b, a, 5, 1000), // F (token1 -> token0), nets to a tie
+	}
+	buy := func() []*types.Log { return []*types.Log{dodoSwapLog(a, b, 10, 1)} } // T
+
+	bundle := [][]*types.Log{roundTrip, buy(), buy()}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("DODO round-trip + two buys [_,T,T] must not be flagged, got: %v", err)
+	}
+}
