@@ -1,6 +1,7 @@
 package bscexorcist
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -47,6 +48,11 @@ func TestDetectSandwichForBundle(t *testing.T) {
 		{
 			name:    "testCase0",
 			logs:    testCase0,
+			wantErr: true,
+		},
+		{
+			name:    "testCase7PancakeV4",
+			logs:    testCase7PancakeV4,
 			wantErr: true,
 		},
 	}
@@ -327,38 +333,38 @@ var (
 				},
 				Data: hexutil.MustDecode("0xffffffffffffffffffffffffffffffffffffffffffffe76eefee5f2095db0800000000000000000000000000000000000000000000000063030b852e1e7ba6300000000000000000000000000000000000000000201e4fb7bb2dc5c7940e7e13000000000000000000000000000000000000000000392bbff455b2bb9dafab33ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5dd2000000000000000000000000000000000000000000000000000000000000000a"),
 			}, {
-			Address: common.HexToAddress("0xcF59B8C8BAA2dea520e3D549F97d4e49aDE17057"),
-			Topics: []common.Hash{
-				common.HexToHash("0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"),
-				common.HexToHash("0x0000000000000000000000007a7ad9aa93cd0a2d0255326e5fb145cec14997ff"),
-				common.HexToHash("0x000000000000000000000000927c4306a908362694eece7e4f45c1624dd51721"),
+				Address: common.HexToAddress("0xcF59B8C8BAA2dea520e3D549F97d4e49aDE17057"),
+				Topics: []common.Hash{
+					common.HexToHash("0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"),
+					common.HexToHash("0x0000000000000000000000007a7ad9aa93cd0a2d0255326e5fb145cec14997ff"),
+					common.HexToHash("0x000000000000000000000000927c4306a908362694eece7e4f45c1624dd51721"),
+				},
+				Data: hexutil.MustDecode("0x000000000000000000000000000000000000000000000a0235f4380f2b3e7800ffffffffffffffffffffffffffffffffffffffffffffffffffdf98888f57ad3a0000000000000000000000000000000000000000001a8895ed39cbb97d40ba1b000000000000000000000000000000000000000000000006e27bd7319038a46bfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd9da900000000000000000000000000000000000000000000000015a543308721dedd0000000000000000000000000000000000000000000000000000000000000000"),
+			}, {
+				Address: common.HexToAddress("0x81C7294b66955824BC04acB642ae8dC58e6cE507"),
+				Topics: []common.Hash{
+					common.HexToHash("0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"),
+					common.HexToHash("0x0000000000000000000000007a7ad9aa93cd0a2d0255326e5fb145cec14997ff"),
+					common.HexToHash("0x000000000000000000000000927c4306a908362694eece7e4f45c1624dd51721"),
+				},
+				Data: hexutil.MustDecode("0x0000000000000000000000000000000000000000000009194852618227501000ffffffffffffffffffffffffffffffffffffffffffffffdb7dc39bf9b68a3d1400000000000000000000000000000000000000001ec15609a9c3c315b47cc4390000000000000000000000000000000000000000000002181e7c4540269d76a3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5a6f"),
+			}, {
+				Address: common.HexToAddress("0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF"),
+				Topics: []common.Hash{
+					common.HexToHash("0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"),
+					common.HexToHash("0xb2008c0126f1adeed67d42da44ac4b5c5abd9ef156bd93c106e082cb10e04552"),
+					common.HexToHash("0x000000000000000000000000c0fab674ff7ddf8b891495ba9975b0fe1dcac735"),
+				},
+				Data: hexutil.MustDecode("0xffffffffffffffffffffffffffffffffffffffffffffff712f87ca2fadd49f5f0000000000000000000000000000000000000000000000023f8adb35e075df3900000000000000000000000000000000000000000000000000000001000276a40000000000000000000000000000000000000000000000000000000000000000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff276180000000000000000000000000000000000000000000000000000000000000008"),
+			}, {
+				Address: common.HexToAddress("0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF"),
+				Topics: []common.Hash{
+					common.HexToHash("0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"),
+					common.HexToHash("0xed461e6026d36fa5c289a288cc450fb7556ad2e2642fcda0d173a284140d96bd"),
+					common.HexToHash("0x000000000000000000000000c0fab674ff7ddf8b891495ba9975b0fe1dcac735"),
+				},
+				Data: hexutil.MustDecode("0xffffffffffffffffffffffffffffffffffffffffffffff17125e2972fc1198000000000000000000000000000000000000000000000000005a740cfe34ef868d000000000000000000000000000000000000000000006c756dcfcc1d9835b57e00000000000000000000000000000000000000000000000000592f0d2b1cd66dfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc5a6c0000000000000000000000000000000000000000000000000000000000000005"),
 			},
-			Data: hexutil.MustDecode("0x000000000000000000000000000000000000000000000a0235f4380f2b3e7800ffffffffffffffffffffffffffffffffffffffffffffffffffdf98888f57ad3a0000000000000000000000000000000000000000001a8895ed39cbb97d40ba1b000000000000000000000000000000000000000000000006e27bd7319038a46bfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd9da900000000000000000000000000000000000000000000000015a543308721dedd0000000000000000000000000000000000000000000000000000000000000000"),
-		}, {
-			Address: common.HexToAddress("0x81C7294b66955824BC04acB642ae8dC58e6cE507"),
-			Topics: []common.Hash{
-				common.HexToHash("0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"),
-				common.HexToHash("0x0000000000000000000000007a7ad9aa93cd0a2d0255326e5fb145cec14997ff"),
-				common.HexToHash("0x000000000000000000000000927c4306a908362694eece7e4f45c1624dd51721"),
-			},
-			Data: hexutil.MustDecode("0x0000000000000000000000000000000000000000000009194852618227501000ffffffffffffffffffffffffffffffffffffffffffffffdb7dc39bf9b68a3d1400000000000000000000000000000000000000001ec15609a9c3c315b47cc4390000000000000000000000000000000000000000000002181e7c4540269d76a3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5a6f"),
-		}, {
-			Address: common.HexToAddress("0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF"),
-			Topics: []common.Hash{
-				common.HexToHash("0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"),
-				common.HexToHash("0xb2008c0126f1adeed67d42da44ac4b5c5abd9ef156bd93c106e082cb10e04552"),
-				common.HexToHash("0x000000000000000000000000c0fab674ff7ddf8b891495ba9975b0fe1dcac735"),
-			},
-			Data: hexutil.MustDecode("0xffffffffffffffffffffffffffffffffffffffffffffff712f87ca2fadd49f5f0000000000000000000000000000000000000000000000023f8adb35e075df3900000000000000000000000000000000000000000000000000000001000276a40000000000000000000000000000000000000000000000000000000000000000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff276180000000000000000000000000000000000000000000000000000000000000008"),
-		}, {
-			Address: common.HexToAddress("0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF"),
-			Topics: []common.Hash{
-				common.HexToHash("0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"),
-				common.HexToHash("0xed461e6026d36fa5c289a288cc450fb7556ad2e2642fcda0d173a284140d96bd"),
-				common.HexToHash("0x000000000000000000000000c0fab674ff7ddf8b891495ba9975b0fe1dcac735"),
-			},
-			Data: hexutil.MustDecode("0xffffffffffffffffffffffffffffffffffffffffffffff17125e2972fc1198000000000000000000000000000000000000000000000000005a740cfe34ef868d000000000000000000000000000000000000000000006c756dcfcc1d9835b57e00000000000000000000000000000000000000000000000000592f0d2b1cd66dfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc5a6c0000000000000000000000000000000000000000000000000000000000000005"),
-		},
 		},
 		// tx3
 		{
@@ -382,6 +388,50 @@ var (
 					common.HexToHash("0x000000000000000000000000695a122b5e936f82719217c4823025bff07b4d51"),
 				},
 				Data: hexutil.MustDecode("0xfffffffffffffffffffffffffffffffffffffffffffff949fea54034d018f33900000000000000000000000000000000000000000000001b0d88b0e03faeaa110000000000000000000000000000000000000000201fb01f52e928503fcc55ce0000000000000000000000000000000000000000004dd7131578ce1d99162e57ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff5dd60000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003a81c4e7fdc914"),
+			},
+		},
+	}
+
+	// PancakeSwap V4 sandwich attack test case
+	// From online.logs - 3 swaps on the same pool with sandwich pattern
+	// Front run: amount0 negative (token0 out), amount1 positive (token1 in) -> token1 to token0 (IsToken0To1 = false)
+	// Trigger: same direction as front run
+	// Back run: amount0 positive (token0 in), amount1 negative (token1 out) -> token0 to token1 (IsToken0To1 = true)
+	testCase7PancakeV4 = [][]*types.Log{
+		// tx1 - Front run
+		{
+			{
+				Address: common.HexToAddress("0xa0ffb9c1ce1fe56963b0321b32e7a030211405bb"),
+				Topics: []common.Hash{
+					common.HexToHash("0x04206ad2b7c0f463bff3dd4f33c5735b0f2957a351e4f79763a4fa9e775dd237"),
+					common.HexToHash("0x9a5d9822856a5b78491108a85725d4488352ccd5dcff2f8dbcd0a5a4b5edb3be"),
+					common.HexToHash("0x00000000000000000000000048D9cb0C40287A377e961925BD89F777FfDc4eed"),
+				},
+				Data: hexutil.MustDecode("0xfffffffffffffffffffffffffffffffffffffffffffffff4cc8e67ac48193c2900000000000000000000000000000000000000000000015cddb347054b809f3b00000000000000000000000000000000000000058bd524e66275ce25175b6c74000000000000000000000000000000000000000000001372e02bfd18e3d45a3200000000000000000000000000000000000000000000000000000000000085d800000000000000000000000000000000000000000000000000000000000000630000000000000000000000000000000000000000000000000000000000000020"),
+			},
+		},
+		// tx2 - Trigger (victim)
+		{
+			{
+				Address: common.HexToAddress("0xa0ffb9c1ce1fe56963b0321b32e7a030211405bb"),
+				Topics: []common.Hash{
+					common.HexToHash("0x04206ad2b7c0f463bff3dd4f33c5735b0f2957a351e4f79763a4fa9e775dd237"),
+					common.HexToHash("0x9a5d9822856a5b78491108a85725d4488352ccd5dcff2f8dbcd0a5a4b5edb3be"),
+					common.HexToHash("0x000000000000000000000000000000000000000000000000000000000000dead"), // PancakeSwapInfinityHookAdapter placeholder
+				},
+				Data: hexutil.MustDecode("0xffffffffffffffffffffffffffffffffffffffffffffffef4b1c01c1c845e1b90000000000000000000000000000000000000000000001f87765aaa21c6b2110000000000000000000000000000000000000000571e4f2c1e243270f9bea3862000000000000000000000000000000000000000000001372e02bfd18e3d45a32000000000000000000000000000000000000000000000000000000000000846700000000000000000000000000000000000000000000000000000000000000630000000000000000000000000000000000000000000000000000000000000020"),
+			},
+		},
+		// tx3 - Back run
+		{
+			{
+				Address: common.HexToAddress("0xa0ffb9c1ce1fe56963b0321b32e7a030211405bb"),
+				Topics: []common.Hash{
+					common.HexToHash("0x04206ad2b7c0f463bff3dd4f33c5735b0f2957a351e4f79763a4fa9e775dd237"),
+					common.HexToHash("0x9a5d9822856a5b78491108a85725d4488352ccd5dcff2f8dbcd0a5a4b5edb3be"),
+					common.HexToHash("0x00000000000000000000000048D9cb0C40287A377e961925BD89F777FfDc4eed"),
+				},
+				Data: hexutil.MustDecode("0x00000000000000000000000000000000000000000000000b9de0e60d11af2732fffffffffffffffffffffffffffffffffffffffffffffea3224cb8fab47f60c6000000000000000000000000000000000000000583d48d17745ab37c7ce460ee000000000000000000000000000000000000000000001372e02bfd18e3d45a32000000000000000000000000000000000000000000000000000000000000856700000000000000000000000000000000000000000000000000000000000000630000000000000000000000000000000000000000000000000000000000000020"),
 			},
 		},
 	}
@@ -419,3 +469,139 @@ var (
 		},
 	}
 )
+
+// --- Regression: a single multi-hop transaction must not fabricate a sandwich ---
+//
+// PancakeV3 swap signature; reused to build synthetic V3 swap logs.
+const v3SwapSig = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83"
+
+// int256Bytes encodes a signed int into a 32-byte big-endian two's-complement word,
+// matching tools.DecodeSignedInt256.
+func int256Bytes(v int64) []byte {
+	b := big.NewInt(v)
+	if v < 0 {
+		b.Add(new(big.Int).Lsh(big.NewInt(1), 256), b)
+	}
+	out := make([]byte, 32)
+	b.FillBytes(out)
+	return out
+}
+
+// v3SwapLog builds a minimal PancakeV3 Swap log. amount0>0/amount1<0 => token0->token1
+// (IsToken0To1==true, "sell token0"); amount0<0/amount1>0 => token1->token0 ("buy token0").
+func v3SwapLog(pool common.Address, amount0, amount1 int64) *types.Log {
+	data := make([]byte, 160) // amount0, amount1, sqrtPriceX96, liquidity, tick
+	copy(data[0:32], int256Bytes(amount0))
+	copy(data[32:64], int256Bytes(amount1))
+	return &types.Log{
+		Address: pool,
+		Topics:  []common.Hash{common.HexToHash(v3SwapSig)},
+		Data:    data,
+	}
+}
+
+// A honest backrun: one victim tx whose internal multi-hop routes through the same
+// pool several times in one direction, followed by independent backrun txs in the
+// opposite direction. The per-tx swaps of the victim must collapse to a single net
+// leg, so the bundle is [T, F, F, F, F] — not a sandwich.
+func TestDetectSandwichForBundle_BackrunNotFlagged(t *testing.T) {
+	pool := common.HexToAddress("0x194fb07E51EEb6FeC9Eae4edad6523F8dFF2C7eD")
+
+	victimTx := []*types.Log{
+		v3SwapLog(pool, 100, -90),
+		v3SwapLog(pool, 100, -90),
+		v3SwapLog(pool, 100, -90),
+		v3SwapLog(pool, 100, -90),
+	}
+	backrun := func() []*types.Log { return []*types.Log{v3SwapLog(pool, -100, 90)} }
+
+	bundle := [][]*types.Log{victimTx, backrun(), backrun(), backrun(), backrun()}
+
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("honest backrun must not be flagged as sandwich, got: %v", err)
+	}
+}
+
+// A classic sandwich keeps front-run and back-run in separate transactions around
+// the victim, so per-tx collapse leaves [T, T, F] intact and it is still detected.
+func TestDetectSandwichForBundle_ClassicStillDetected(t *testing.T) {
+	pool := common.HexToAddress("0x194fb07E51EEb6FeC9Eae4edad6523F8dFF2C7eD")
+
+	frontRun := []*types.Log{v3SwapLog(pool, 100, -90)} // buy (T)
+	victim := []*types.Log{v3SwapLog(pool, 100, -90)}   // buy (T)
+	backRun := []*types.Log{v3SwapLog(pool, -100, 90)}  // sell (F)
+
+	bundle := [][]*types.Log{frontRun, victim, backRun}
+
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("classic 3-tx sandwich must still be detected")
+	}
+}
+
+// --- Regression: collapse must rely only on direction, not per-protocol amounts ---
+
+const (
+	fourMemeBuySig  = "0x7db52723a3b2cdd6164364b3b766e65e540d7be48ffa89582956d8eaebe62942"
+	fourMemeSellSig = "0x0a5575b3648bae2210cee56bf33254cc1ddfbc7bf637c0af2ac18b14fb1bae19"
+)
+
+// fourMemeSwapLog builds a FourMeme swap log. FourMeme's AmountIn/AmountOut both
+// return 0, so any amount-based net direction would silently drop these swaps.
+func fourMemeSwapLog(token common.Address, buy bool) *types.Log {
+	sig := fourMemeSellSig
+	if buy {
+		sig = fourMemeBuySig
+	}
+	data := make([]byte, 32)
+	copy(data[12:32], token.Bytes()) // address occupies the low 20 bytes
+	return &types.Log{
+		Topics: []common.Hash{common.HexToHash(sig)},
+		Data:   data,
+	}
+}
+
+// FourMeme reports direction via IsToken0To1 only; a buy-buy-sell across three
+// separate transactions must still be detected.
+func TestDetectSandwichForBundle_FourMemeStillDetected(t *testing.T) {
+	token := common.HexToAddress("0x000000000000000000000000000000000000dEaD")
+	bundle := [][]*types.Log{
+		{fourMemeSwapLog(token, true)},  // buy  (T)
+		{fourMemeSwapLog(token, true)},  // buy  (T)
+		{fourMemeSwapLog(token, false)}, // sell (F)
+	}
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("FourMeme buy-buy-sell sandwich must still be detected")
+	}
+}
+
+// dodoSwapLog builds a DODO swap log. tokenFrom<tokenTo => token0->token1 (T).
+func dodoSwapLog(from, to common.Address, amountFrom, amountTo int64) *types.Log {
+	data := make([]byte, 128)
+	copy(data[12:32], from.Bytes())
+	copy(data[44:64], to.Bytes())
+	big.NewInt(amountFrom).FillBytes(data[64:96])
+	big.NewInt(amountTo).FillBytes(data[96:128])
+	return &types.Log{
+		Topics: []common.Hash{common.HexToHash("0xc2c0245e056d5fb095f04cd6373bc770802ebd1e6c918eb78fdef843cdb37b0f")},
+		Data:   data,
+	}
+}
+
+// DODO's AmountIn/AmountOut are indexed by token0/token1, not input/output, so an
+// amount-based net misattributes a reverse swap's token1 amount as token0 output.
+// A single transaction that round-trips the same DODO pool must net to no signal,
+// leaving [T, T] which is not a sandwich.
+func TestDetectSandwichForBundle_DodoRoundTripNotFlagged(t *testing.T) {
+	a := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	b := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	roundTrip := []*types.Log{
+		dodoSwapLog(a, b, 1000, 5), // T (token0 -> token1)
+		dodoSwapLog(b, a, 5, 1000), // F (token1 -> token0), nets to a tie
+	}
+	buy := func() []*types.Log { return []*types.Log{dodoSwapLog(a, b, 10, 1)} } // T
+
+	bundle := [][]*types.Log{roundTrip, buy(), buy()}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("DODO round-trip + two buys [_,T,T] must not be flagged, got: %v", err)
+	}
+}
