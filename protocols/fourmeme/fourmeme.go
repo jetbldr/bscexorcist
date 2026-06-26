@@ -39,6 +39,10 @@ func (s *FourMemeSwap) AmountOut() *big.Int {
 	return big.NewInt(0)
 }
 
+// AmountsReliable reports false: FourMeme returns zero for AmountIn/AmountOut,
+// so only direction is usable.
+func (s *FourMemeSwap) AmountsReliable() bool { return false }
+
 // ParseSwap parses a FourmemeSwap log into a FourmemeSwap struct.
 // Returns nil if the log is not a valid swap event.
 func ParseSwap(log *types.Log) *FourMemeSwap {

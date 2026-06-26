@@ -20,6 +20,12 @@ type SwapEvent interface {
 	IsToken0To1() bool
 	AmountIn() *big.Int
 	AmountOut() *big.Int
+	// AmountsReliable reports whether AmountIn/AmountOut are true input/output
+	// magnitudes (after Abs). It is false for adapters whose amounts cannot be
+	// trusted for value reconciliation: DODO indexes amounts by token0/token1
+	// rather than input/output, and FourMeme returns zero for both. Sandwich
+	// detection falls back to direction-only matching when this is false.
+	AmountsReliable() bool
 }
 
 var (

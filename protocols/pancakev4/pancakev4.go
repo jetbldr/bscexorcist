@@ -62,6 +62,10 @@ func decodeSignedInt128(data []byte) *big.Int {
 	return value
 }
 
+// AmountsReliable reports that PancakeV4 AmountIn/AmountOut (after Abs) are true
+// input/output magnitudes.
+func (s *PancakeV4Swap) AmountsReliable() bool { return true }
+
 // ParseSwap parses a PancakeSwap V4 swap log into a PancakeV4Swap struct.
 // PancakeSwap V4 Swap event:
 // Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee, uint16 protocolFee)

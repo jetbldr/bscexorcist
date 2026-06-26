@@ -538,6 +538,231 @@ func TestDetectSandwichForBundle_ClassicStillDetected(t *testing.T) {
 	}
 }
 
+// --- Regression: a directional Sell-Sell-Buy that fails asset conservation is not a sandwich ---
+
+// signed256 encodes a signed big.Int as a 32-byte big-endian two's-complement word.
+func signed256(v *big.Int) []byte {
+	b := new(big.Int).Set(v)
+	if b.Sign() < 0 {
+		b.Add(new(big.Int).Lsh(big.NewInt(1), 256), b)
+	}
+	out := make([]byte, 32)
+	b.FillBytes(out)
+	return out
+}
+
+// pancakeV4Log builds a PancakeV4 Swap log. amount0>0 => token0->token1 (IsToken0To1==true).
+func pancakeV4Log(poolID common.Hash, amount0, amount1 *big.Int) *types.Log {
+	data := make([]byte, 224)
+	copy(data[0:32], signed256(amount0))
+	copy(data[32:64], signed256(amount1))
+	return &types.Log{
+		Topics: []common.Hash{
+			common.HexToHash("0x04206ad2b7c0f463bff3dd4f33c5735b0f2957a351e4f79763a4fa9e775dd237"),
+			poolID,
+			common.HexToHash("0x0000000000000000000000005f5e8660d388db53a57b0650ab1565d95a21297f"),
+		},
+		Data: data,
+	}
+}
+
+// Reproduces production bundle 0x9e62...4062 on PancakeV4 pool 0xf6170...: searcher A's
+// incidental sell, then searcher B's multi-leg arbitrage (sell then buy back). The
+// directions are Sell-Sell-Buy, but the back-run buys 11.11e18 token0 while the only
+// earlier sell is A's 7.09e18 — they do not conserve, so no victim is bracketed and this
+// must not be flagged. (Was a false positive under direction-only detection.)
+func TestDetectSandwichForBundle_CrossTraderArbNotFlagged(t *testing.T) {
+	pool := common.HexToHash("0xf6170c9b48765c56dae252b10e87e9ac51330846000000000000000000000000")
+	bn := func(s string) *big.Int { v, _ := new(big.Int).SetString(s, 10); return v }
+	bundle := [][]*types.Log{
+		{pancakeV4Log(pool, bn("-7094659767506153562"), bn("26428545600792617964"))},  // A: sell token1->token0
+		{pancakeV4Log(pool, bn("-15570669439182987264"), bn("57998528022014499813"))}, // B: sell token1->token0
+		{pancakeV4Log(pool, bn("11110624239951633190"), bn("-41393089742295897788"))}, // B: buy token0->token1
+	}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("cross-trader arbitrage (no conserving bracket) must not be flagged, got: %v", err)
+	}
+}
+
+// A clean PancakeV4 sandwich whose back-run is split across two transactions: front-run
+// buys ~100 token0-worth, two back-runs sell ~50 each. The pairwise front/back never
+// matches, but the conservation check sums the split back-run and still detects it.
+func TestDetectSandwichForBundle_SplitBackrunStillDetected(t *testing.T) {
+	pool := common.HexToHash("0xabcdef0000000000000000000000000000000000000000000000000000000000")
+	bn := func(s string) *big.Int { v, _ := new(big.Int).SetString(s, 10); return v }
+	bundle := [][]*types.Log{
+		// front-run: buy token1 (amount0>0), acquires 1000 token1
+		{pancakeV4Log(pool, bn("500000000000000000000"), bn("-1000000000000000000000"))},
+		// victim: also buys token1
+		{pancakeV4Log(pool, bn("250000000000000000000"), bn("-480000000000000000000"))},
+		// back-run split #1: sell token1 (amount0<0), disposes 500 token1
+		{pancakeV4Log(pool, bn("-260000000000000000000"), bn("500000000000000000000"))},
+		// back-run split #2: sell token1, disposes 500 token1 -> 500+500 == front 1000
+		{pancakeV4Log(pool, bn("-260000000000000000000"), bn("500000000000000000000"))},
+	}
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("sandwich with a split back-run must still be detected")
+	}
+}
+
+// A transaction whose majority swap direction is token0->token1 but whose NET token1
+// change is negative (it really sold token1) must not be counted as a front-run that
+// "bought" token1. tx1 below folds to direction T (two tiny buys outvote one big sell)
+// yet nets dT1 = -96; if the sign were dropped via Abs it would falsely conserve against
+// tx3's sell of 96 token1 and be flagged.
+func TestDetectSandwichForBundle_FoldedDirectionMismatchNotFlagged(t *testing.T) {
+	pool := common.HexToHash("0x1111111111111111111111111111111111111111000000000000000000000000")
+	bundle := [][]*types.Log{
+		{ // tx1: folds to T (2 buys vs 1 sell) but net sells token1 (2+2-100 = -96)
+			pancakeV4Log(pool, big.NewInt(10), big.NewInt(-2)),
+			pancakeV4Log(pool, big.NewInt(10), big.NewInt(-2)),
+			pancakeV4Log(pool, big.NewInt(-50), big.NewInt(100)),
+		},
+		{pancakeV4Log(pool, big.NewInt(30), big.NewInt(-50))}, // tx2: clean buy (would-be victim)
+		{pancakeV4Log(pool, big.NewInt(-48), big.NewInt(96))}, // tx3: sells 96 token1
+	}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("a leg whose net asset direction contradicts its folded direction must not conserve, got: %v", err)
+	}
+}
+
+// The same signed-flow constraint must apply to the victim. A sandwiched victim is a
+// buyer that ends up holding more of the asset; a middle leg that folds to direction T
+// but net-sells the asset is not being sandwiched. Here front buys 96 token1, the middle
+// leg folds to T but nets dT1 = -96, and back sells 96 token1 — it must not be flagged.
+func TestDetectSandwichForBundle_FoldedVictimMismatchNotFlagged(t *testing.T) {
+	pool := common.HexToHash("0x2222222222222222222222222222222222222222000000000000000000000000")
+	bundle := [][]*types.Log{
+		{pancakeV4Log(pool, big.NewInt(48), big.NewInt(-96))}, // front: clean buy of 96 token1
+		{ // middle: folds to T (2 buys vs 1 sell) but net sells token1 (2+2-100 = -96)
+			pancakeV4Log(pool, big.NewInt(10), big.NewInt(-2)),
+			pancakeV4Log(pool, big.NewInt(10), big.NewInt(-2)),
+			pancakeV4Log(pool, big.NewInt(-50), big.NewInt(100)),
+		},
+		{pancakeV4Log(pool, big.NewInt(-48), big.NewInt(96))}, // back: sells 96 token1
+	}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("a victim whose net asset direction contradicts its folded direction must not conserve, got: %v", err)
+	}
+}
+
+// And to the back-run: a leg that folds to "sell" but net-bought the asset has not
+// disposed of anything, so it cannot be the back-run that unwinds a sandwich. Here the
+// last leg folds to F (2 sells vs 1 buy) but nets dT1 = +96; matching front (96) + victim
+// must not conserve against it.
+func TestDetectSandwichForBundle_FoldedBackrunMismatchNotFlagged(t *testing.T) {
+	pool := common.HexToHash("0x3333333333333333333333333333333333333333000000000000000000000000")
+	bundle := [][]*types.Log{
+		{pancakeV4Log(pool, big.NewInt(48), big.NewInt(-96))}, // front: clean buy of 96 token1
+		{pancakeV4Log(pool, big.NewInt(25), big.NewInt(-50))}, // victim: clean buy of 50 token1
+		{ // back: folds to F (2 sells vs 1 buy) but net buys token1 (-2-2+100 = +96)
+			pancakeV4Log(pool, big.NewInt(-1), big.NewInt(2)),
+			pancakeV4Log(pool, big.NewInt(-1), big.NewInt(2)),
+			pancakeV4Log(pool, big.NewInt(50), big.NewInt(-100)),
+		},
+	}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("a back-run whose net asset direction contradicts its folded direction must not conserve, got: %v", err)
+	}
+}
+
+// Over the leg cap the exact subset search is skipped, but a reliable-amount pool must
+// still require conservation rather than reverting to direction-only flagging. 17 legs
+// shaped Buy-...-Sell where the front-runs buy 1e6 token1 each and the lone sell disposes
+// 1 token1 do not conserve and must not be flagged.
+func TestDetectSandwichForBundle_OverCapNonConservingNotFlagged(t *testing.T) {
+	pool := common.HexToHash("0x4444444444444444444444444444444444444444000000000000000000000000")
+	oneM := big.NewInt(1_000_000)
+	var bundle [][]*types.Log
+	for i := 0; i < 16; i++ { // 16 buys of 1e6 token1 (direction T)
+		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500_000), new(big.Int).Neg(oneM))})
+	}
+	// one sell of just 1 token1 (direction F) -> 17 legs, has the T,T,F shape but no conservation
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-1), big.NewInt(1))})
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("over-cap pool with the sandwich shape but no conservation must not be flagged, got: %v", err)
+	}
+}
+
+// Over the cap, a genuinely conserving sandwich must still be detected: front buys 1000
+// token1, many victims buy, and the back-run sells 1000 token1 back. 17 legs.
+func TestDetectSandwichForBundle_OverCapConservingStillDetected(t *testing.T) {
+	pool := common.HexToHash("0x5555555555555555555555555555555555555555000000000000000000000000")
+	var bundle [][]*types.Log
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500), big.NewInt(-1000))}) // front: buy 1000 token1
+	for i := 0; i < 15; i++ {                                                                      // 15 victim buys
+		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))})
+	}
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-480), big.NewInt(1000))}) // back: sell 1000 token1
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("over-cap conserving sandwich must still be detected")
+	}
+}
+
+// Over the cap, a sandwich whose FRONT-RUN is split across two transactions must still be
+// detected: front buys 500 + 500 token1, victim buys, back sells 1000 token1; filler buys
+// after the victim push the pool past the cap. No single front leg equals the back-run, so
+// only subset matching catches it.
+func TestDetectSandwichForBundle_OverCapSplitFrontStillDetected(t *testing.T) {
+	pool := common.HexToHash("0x6666666666666666666666666666666666666666000000000000000000000000")
+	var bundle [][]*types.Log
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(250), big.NewInt(-500))})  // front #1: buy 500 token1
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(250), big.NewInt(-500))})  // front #2: buy 500 token1
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))})    // victim: buy token1
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-480), big.NewInt(1000))}) // back: sell 1000 token1
+	for i := 0; i < 14; i++ {                                                                      // filler buys after victim -> 18 legs
+		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(5), big.NewInt(-10))})
+	}
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("over-cap sandwich with a split front-run must still be detected")
+	}
+}
+
+// A pool with the sandwich shape but no conservation must not be flagged just because it
+// has many legs. 64 large buys of token1 plus one sell of 1 token1 do not conserve; this
+// exercises the scalable path (below the hard cap) and must not be flagged.
+func TestDetectSandwichForBundle_ManyLegsNonConservingNotFlagged(t *testing.T) {
+	pool := common.HexToHash("0x7777777777777777777777777777777777777777000000000000000000000000")
+	var bundle [][]*types.Log
+	for i := 0; i < 64; i++ {
+		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500_000), big.NewInt(-1_000_000))})
+	}
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-1), big.NewInt(1))})
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("65-leg non-conserving pool must not be flagged, got: %v", err)
+	}
+}
+
+// Beyond the hard cap the analysis is skipped, but the indeterminate result must not be a
+// false sandwich: a huge non-conserving pool must not be flagged.
+func TestDetectSandwichForBundle_HardCapNonConservingNotFlagged(t *testing.T) {
+	pool := common.HexToHash("0x8888888888888888888888888888888888888888000000000000000000000000")
+	var bundle [][]*types.Log
+	for i := 0; i < maxLegsHardCap+8; i++ { // exceed the hard cap
+		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500_000), big.NewInt(-1_000_000))})
+	}
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-1), big.NewInt(1))})
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("over-hard-cap non-conserving pool must not be flagged, got: %v", err)
+	}
+}
+
+// At the edge of the cap a genuinely conserving sandwich must still be detected, so padding
+// a sandwich up to (but not over) the cap cannot hide it: front buys 1000 token1, ~500
+// filler buys, back sells 1000 token1 back.
+func TestDetectSandwichForBundle_LargeConservingStillDetected(t *testing.T) {
+	pool := common.HexToHash("0x9999999999999999999999999999999999999999000000000000000000000000")
+	var bundle [][]*types.Log
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500), big.NewInt(-1000))}) // front: buy 1000 token1
+	for i := 0; i < 500; i++ {                                                                     // filler buys (n=502, under the cap)
+		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(5), big.NewInt(-10))})
+	}
+	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-480), big.NewInt(1000))}) // back: sell 1000 token1
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("a conserving sandwich padded up to the cap must still be detected")
+	}
+}
+
 // --- Regression: collapse must rely only on direction, not per-protocol amounts ---
 
 const (
