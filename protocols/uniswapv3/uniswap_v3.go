@@ -43,6 +43,9 @@ func (s *V3Swap) AmountOut() *big.Int {
 	return new(big.Int).Abs(s.amount0)
 }
 
+// AmountsReliable reports that V3 AmountIn/AmountOut are true input/output amounts.
+func (s *V3Swap) AmountsReliable() bool { return true }
+
 // ParseSwap parses a Uniswap V3 swap log into a V3Swap struct.
 // Returns nil if the log is not a valid swap event.
 func ParseSwap(log *types.Log) *V3Swap {

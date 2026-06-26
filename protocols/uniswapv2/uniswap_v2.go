@@ -51,6 +51,9 @@ func (s *V2Swap) AmountOut() *big.Int {
 	return delta1
 }
 
+// AmountsReliable reports that V2 AmountIn/AmountOut are true input/output amounts.
+func (s *V2Swap) AmountsReliable() bool { return true }
+
 // ParseSwap parses a Uniswap V2 swap log into a V2Swap struct.
 // Returns nil if the log is not a valid swap event.
 func ParseSwap(log *types.Log) *V2Swap {

@@ -45,6 +45,10 @@ func (s *DODOSwap) AmountOut() *big.Int {
 	return new(big.Int).Set(s.amountFrom)
 }
 
+// AmountsReliable reports false: DODO indexes AmountIn/AmountOut by token0/token1
+// rather than by input/output, so they cannot be used for value reconciliation.
+func (s *DODOSwap) AmountsReliable() bool { return false }
+
 // ParseSwap parses a DODOSwap log into a DODOSwap struct.
 // Returns nil if the log is not a valid swap event.
 func ParseSwap(log *types.Log) *DODOSwap {

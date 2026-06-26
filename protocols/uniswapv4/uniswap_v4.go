@@ -44,6 +44,10 @@ func (s *V4Swap) AmountOut() *big.Int {
 	return s.amount1
 }
 
+// AmountsReliable reports that V4 AmountIn/AmountOut (after Abs) are true
+// input/output magnitudes.
+func (s *V4Swap) AmountsReliable() bool { return true }
+
 // ParseSwap parses a Uniswap V4 swap log into a V4Swap struct.
 // Returns nil if the log is not a valid swap event.
 func ParseSwap(log *types.Log) *V4Swap {
