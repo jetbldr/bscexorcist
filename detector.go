@@ -11,32 +11,11 @@ import (
 )
 
 // sandwichTolPercent is the allowed mismatch, in percent of the larger side, between
-// the asset bought in the front-run and the asset sold back in the back-run. A genuine
+// the asset acquired by the front-run and the asset disposed by the back-run. A genuine
 // attacker unwinds almost exactly what it acquired (residual ~0; real captures sit
 // within a few percent), so a small tolerance separates true sandwiches from unrelated
 // trades that merely share a pool and direction.
 const sandwichTolPercent = 15
-
-// maxLegsForConservation is the leg count up to which the exact two-sided subset search
-// (conserves) runs. Front and back are disjoint subsets, so it is O(n*2^n) overall (~1M
-// big.Int ops at n=16). Above it, conservesByTotals takes over (scalable, slightly weaker);
-// above maxLegsHardCap the result is left indeterminate (not flagged) as a work bound.
-const maxLegsForConservation = 16
-
-// maxLegsHardCap bounds total work. The scalable conservesByTotals path is O(n^2) and
-// handles pools up to this many legs; this sits around the most swap transactions that can
-// fit in one (half-gaslimit) block, so an economically viable bundle stays under it and is
-// always conservation-checked. Above it the result is left indeterminate — and indeterminate
-// means NOT a sandwich, never a forced flag, so a large bundle cannot trip a false positive
-// merely by its leg count. The residual (a conserving sandwich padded past the cap is missed)
-// requires hundreds of same-pool transactions, whose gas and self-inflicted slippage dwarf
-// any sandwich profit.
-const maxLegsHardCap = 512
-
-// overCapFrontSubsetCap bounds the front-run subset enumeration on the scalable path. A
-// front-run split into more transactions than this on one pool is not realistic; beyond it
-// the scalable path matches single front legs only.
-const overCapFrontSubsetCap = 12
 
 // swapLeg is one transaction's net activity on a single pool: its net swap direction and
 // the trader's signed net receipt of token0/token1 (positive = received).
@@ -128,48 +107,34 @@ func netLegsPerPool(txLogs []*types.Log) map[common.Address]swapLeg {
 }
 
 // isSandwich reports whether a pool's per-transaction legs (in execution order) form a
-// sandwich. It requires both:
+// sandwich, distinguishing a real attack from unrelated trades that merely share a pool
+// and direction (e.g. one searcher's incidental swap plus another's multi-leg arbitrage).
 //
-//  1. the directional shape Buy-Buy-Sell or Sell-Sell-Buy (a necessary precondition), and
-//  2. asset conservation around a bracketed victim — a front-run whose acquired asset is
-//     sold back by a later back-run, with the victim trading the same direction in between.
+// For reliable-amount pools the verdict is asset conservation around a bracketed victim: a
+// front-run whose acquired asset is sold back by a later back-run, with the victim trading
+// the same direction in between. This is sender-agnostic — the bought amount equals the
+// sold-back amount regardless of which addresses sign the legs — so it still catches
+// sandwiches spread across multiple addresses. A conserving bracket is a front leg and
+// victim in one direction followed by a back leg in the other, so it already entails the
+// Buy-Buy-Sell / Sell-Sell-Buy shape; the separate directional pre-check is therefore
+// redundant here and is skipped (it would only ever agree).
 //
-// Condition 2 is what distinguishes a real sandwich from unrelated trades that merely
-// share a pool and direction (e.g. one searcher's incidental swap plus another searcher's
-// multi-leg arbitrage). It is sender-agnostic: the bought amount equals the sold-back
-// amount regardless of which addresses sign the front-run and back-run, so it still
-// catches sandwiches that spread their legs across multiple addresses.
+// DODO/FourMeme amounts cannot be reconciled (indexed by token, or zero), so there is
+// nothing to conserve; those pools fall back to flagging on the swap directions alone,
+// preserving prior behavior.
 func isSandwich(legs []swapLeg) bool {
-	n := len(legs)
-	if n < 3 {
-		return false
-	}
-	dirs := make([]bool, n)
-	for i, l := range legs {
-		dirs[i] = l.isToken0To1
-	}
-	if !hasDirectionalPattern(dirs) {
+	if len(legs) < 3 {
 		return false
 	}
 
-	// A pool is single-protocol; if its amounts are not reliable for value reconciliation
-	// (DODO, FourMeme) fall back to direction-only flagging, preserving prior behavior.
 	for _, l := range legs {
 		if !l.reliable {
-			return true
+			dirs := make([]bool, len(legs))
+			for i, leg := range legs {
+				dirs[i] = leg.isToken0To1
+			}
+			return hasDirectionalPattern(dirs)
 		}
-	}
-	if n > maxLegsHardCap {
-		// Too many legs to analyze affordably. Leave it indeterminate rather than flag:
-		// forcing a sandwich verdict here would be a direction-only false positive — exactly
-		// what this gate removes — and would let any complex same-pool bundle trip it.
-		return false
-	}
-	if n > maxLegsForConservation {
-		// Too many legs for the exact subset search. Use the scalable conservation
-		// approximation rather than reverting to direction-only flagging, which would
-		// refire the false positive this gate exists to prevent.
-		return conservesByTotals(legs, true) || conservesByTotals(legs, false)
 	}
 
 	// A buy side of token0->token1 makes token1 the asset (Buy-Buy-Sell); the reverse
@@ -180,12 +145,27 @@ func isSandwich(legs []swapLeg) bool {
 // conserves checks the asset-conservation condition for one orientation. buySide selects
 // the front/victim direction; the asset token is token1 when buySide is true, else token0.
 //
+// For each candidate victim leg it builds the front-run as the single contiguous run of
+// same-direction legs nearest the victim (walking backward), and the back-run as the
+// contiguous run of opposite-direction legs nearest it (walking forward), then flags when
+// some front run total matches some back run total within tolerance. Accumulating inward
+// from the victim and trying each partial sum absorbs a front-run or back-run split across
+// several adjacent transactions, while a nearer partial sum winning excludes an incidental
+// same-direction trade that sits further out.
+//
+// The run is genuinely contiguous: an opposite-direction (or folded, see below) leg that
+// falls *inside* the run ends it, so legs on opposite sides of an interruption are never
+// stitched into one total — e.g. buy 40, sell 10, buy 60 yields front candidates 40 and
+// 60, never 100. An unrelated trade may, however, sit between the run and the victim (a
+// leading gap is skipped): real bundles do interleave an unrelated swap between the
+// front-run and the victim, yet keep the front-run itself in consecutive transactions.
+//
 // The signed net asset change (dT1 or dT0), not its absolute value, decides whether a leg
-// can participate: a front-run must have actually acquired the asset (delta > 0) and a
-// back-run must have actually disposed of it (delta < 0). A transaction whose majority
-// swap direction disagrees with its net asset flow — e.g. two tiny buys outvoting one
-// large sell so the leg folds to "buy" while it net-sold — would otherwise have its
-// magnitude matched against a real sell and fabricate a sandwich.
+// belongs to a run: a front-run leg must have actually acquired the asset (delta > 0) and
+// a back-run leg must have actually disposed of it (delta < 0). A transaction whose
+// majority swap direction disagrees with its net asset flow — e.g. two tiny buys outvoting
+// one large sell so the leg folds to "buy" while it net-sold — does not qualify and ends
+// the run just like an opposite-direction leg.
 func conserves(legs []swapLeg, buySide bool) bool {
 	assetDelta := func(l swapLeg) *big.Int {
 		if buySide {
@@ -201,106 +181,43 @@ func conserves(legs []swapLeg, buySide bool) bool {
 		if legs[vi].isToken0To1 != buySide || assetDelta(legs[vi]).Sign() <= 0 {
 			continue
 		}
-		// front-run candidates execute before the victim and must have acquired the asset;
-		// back-run candidates execute after it and must have disposed of the asset.
-		var front, back []*big.Int
-		for i := 0; i < vi; i++ {
-			if legs[i].isToken0To1 == buySide {
-				if d := assetDelta(legs[i]); d.Sign() > 0 {
-					front = append(front, d)
-				}
-			}
-		}
-		for i := vi + 1; i < len(legs); i++ {
-			if legs[i].isToken0To1 != buySide {
-				if d := assetDelta(legs[i]); d.Sign() < 0 {
-					back = append(back, new(big.Int).Neg(d))
-				}
-			}
-		}
-		if len(front) == 0 || len(back) == 0 {
-			continue
-		}
-		if subsetSumsMatch(front, back) {
-			return true
-		}
-	}
-	return false
-}
-
-// conservesByTotals is the scalable fallback used when a pool has more legs than the exact
-// subset search can afford. For each candidate victim it matches the front-run against the
-// total of the back-run after the victim. The back-run total absorbs a back-run split
-// across transactions, and a bounded subset of the front legs absorbs a split front-run;
-// only when there are more front legs than overCapFrontSubsetCap does it fall back to
-// matching single front legs. Unlike direction-only flagging it never reports a bundle
-// whose amounts do not conserve. Sign discipline matches conserves: front and victim must
-// have net-acquired the asset, the back-run must have net-disposed of it.
-//
-// Residual (disproportionate to close cheaply, see maxLegsHardCap guard): on a pool with
-// more than overCapFrontSubsetCap front legs before the victim, a split front-run can be
-// missed; and padding sells after the victim inflates the back total past tolerance. Both
-// require many same-pool legs in one bundle, which is costly for an attacker to construct.
-func conservesByTotals(legs []swapLeg, buySide bool) bool {
-	assetDelta := func(l swapLeg) *big.Int {
-		if buySide {
-			return l.dT1
-		}
-		return l.dT0
-	}
-	for vi := range legs {
-		if legs[vi].isToken0To1 != buySide || assetDelta(legs[vi]).Sign() <= 0 {
-			continue
-		}
-		backTotal := new(big.Int)
-		for i := vi + 1; i < len(legs); i++ {
-			if legs[i].isToken0To1 != buySide {
-				if d := assetDelta(legs[i]); d.Sign() < 0 {
-					backTotal.Sub(backTotal, d) // accumulate the positive magnitude
-				}
-			}
-		}
-		if backTotal.Sign() == 0 {
-			continue
-		}
+		// front-run partial sums: the contiguous run of legs that acquired the asset in the
+		// front direction, nearest the victim first (ascending). A leading gap of unrelated
+		// legs is skipped; the first non-qualifying leg after the run starts ends it.
 		var front []*big.Int
-		for i := 0; i < vi; i++ {
-			if legs[i].isToken0To1 == buySide {
-				if d := assetDelta(legs[i]); d.Sign() > 0 {
-					front = append(front, d)
-				}
+		acc := new(big.Int)
+		for i := vi - 1; i >= 0; i-- {
+			if legs[i].isToken0To1 == buySide && assetDelta(legs[i]).Sign() > 0 {
+				acc = new(big.Int).Add(acc, assetDelta(legs[i]))
+				front = append(front, acc)
+			} else if len(front) > 0 {
+				break // interruption inside the run
 			}
 		}
-		if len(front) == 0 {
-			continue
-		}
-		if len(front) <= overCapFrontSubsetCap {
-			for _, sf := range subsetSums(front) {
-				if withinTol(sf, backTotal) {
-					return true
-				}
-			}
-		} else {
-			for _, f := range front {
-				if withinTol(f, backTotal) {
-					return true
-				}
+		// back-run partial sums: the contiguous run of legs that disposed the asset in the
+		// opposite direction, nearest the victim first (ascending), same gap/break rule.
+		var back []*big.Int
+		acc = new(big.Int)
+		for i := vi + 1; i < len(legs); i++ {
+			if legs[i].isToken0To1 != buySide && assetDelta(legs[i]).Sign() < 0 {
+				acc = new(big.Int).Sub(acc, assetDelta(legs[i])) // accumulate the positive magnitude
+				back = append(back, acc)
+			} else if len(back) > 0 {
+				break // interruption inside the run
 			}
 		}
-	}
-	return false
-}
-
-// subsetSumsMatch reports whether some nonempty subset of a and some nonempty subset of b
-// have sums within tolerance of each other. This tolerates a front-run or back-run that is
-// split across several transactions.
-func subsetSumsMatch(a, b []*big.Int) bool {
-	sa := subsetSums(a)
-	sb := subsetSums(b)
-	for _, x := range sa {
-		for _, y := range sb {
-			if withinTol(x, y) {
+		// Both runs are ascending, so a within-tolerance pair (if any) is found by a
+		// two-pointer sweep: advancing the smaller side can only discard a value that is
+		// already too small to match anything remaining on the other side.
+		i, j := 0, 0
+		for i < len(front) && j < len(back) {
+			if withinTol(front[i], back[j]) {
 				return true
+			}
+			if front[i].Cmp(back[j]) < 0 {
+				i++
+			} else {
+				j++
 			}
 		}
 	}
@@ -322,43 +239,24 @@ func withinTol(x, y *big.Int) bool {
 	return new(big.Int).Mul(diff, big.NewInt(100)).Cmp(new(big.Int).Mul(big.NewInt(sandwichTolPercent), max)) <= 0
 }
 
-// subsetSums returns the sums of all 2^len(vals)-1 nonempty subsets of vals.
-func subsetSums(vals []*big.Int) []*big.Int {
-	sums := make([]*big.Int, 0, (1<<len(vals))-1)
-	for mask := 1; mask < (1 << len(vals)); mask++ {
-		s := new(big.Int)
-		for i, v := range vals {
-			if mask&(1<<i) != 0 {
-				s.Add(s, v)
-			}
-		}
-		sums = append(sums, s)
-	}
-	return sums
-}
-
-// hasDirectionalPattern checks if swap directions contain a sandwich-shaped subsequence.
+// hasDirectionalPattern reports whether swap directions contain a Buy-Buy-Sell (T,T,F) or
+// Sell-Sell-Buy (F,F,T) subsequence. A single left-to-right pass suffices: track how many
+// buys and sells have been seen so far; a sell seen after at least two buys completes
+// Buy-Buy-Sell, and a buy seen after at least two sells completes Sell-Sell-Buy.
 func hasDirectionalPattern(directions []bool) bool {
-	n := len(directions)
-	if n < 3 {
-		return false
-	}
-
-	// Look for Buy-Buy-Sell or Sell-Sell-Buy patterns
-	for i := 0; i < n-2; i++ {
-		for j := i + 1; j < n-1; j++ {
-			for k := j + 1; k < n; k++ {
-				// Buy-Buy-Sell pattern
-				if directions[i] && directions[j] && !directions[k] {
-					return true
-				}
-				// Sell-Sell-Buy pattern
-				if !directions[i] && !directions[j] && directions[k] {
-					return true
-				}
+	buys, sells := 0, 0
+	for _, isBuy := range directions {
+		if isBuy {
+			if sells >= 2 {
+				return true // Sell-Sell-Buy
 			}
+			buys++
+		} else {
+			if buys >= 2 {
+				return true // Buy-Buy-Sell
+			}
+			sells++
 		}
 	}
-
 	return false
 }

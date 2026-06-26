@@ -666,10 +666,79 @@ func TestDetectSandwichForBundle_FoldedBackrunMismatchNotFlagged(t *testing.T) {
 	}
 }
 
-// Over the leg cap the exact subset search is skipped, but a reliable-amount pool must
-// still require conservation rather than reverting to direction-only flagging. 17 legs
-// shaped Buy-...-Sell where the front-runs buy 1e6 token1 each and the lone sell disposes
-// 1 token1 do not conserve and must not be flagged.
+// A real sandwich preceded by an unrelated same-direction trade must still be detected.
+// An incidental third-party buy (50) sits before the attacker's front-run (buy 100); the
+// attacker then unwinds exactly 100 in the back-run around the victim. Conservation must
+// match the front-run nearest the victim (100) against the back-run (100) and ignore the
+// incidental earlier buy — summing every same-direction leg before the victim (150) would
+// miss this and hand the attacker a one-swap evasion.
+func TestDetectSandwichForBundle_LeadingIncidentalFrontStillDetected(t *testing.T) {
+	pool := common.HexToHash("0xaaaa111111111111111111111111111111111111000000000000000000000000")
+	bundle := [][]*types.Log{
+		{pancakeV4Log(pool, big.NewInt(25), big.NewInt(-50))},  // incidental third-party buy of 50 token1
+		{pancakeV4Log(pool, big.NewInt(50), big.NewInt(-100))}, // attacker front-run: buy 100 token1
+		{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))},  // victim: buy 40 token1
+		{pancakeV4Log(pool, big.NewInt(-50), big.NewInt(100))}, // attacker back-run: sell 100 token1
+	}
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("a sandwich preceded by an incidental same-direction trade must still be detected")
+	}
+}
+
+// The symmetric case: a real sandwich followed by an unrelated same-direction trade must
+// still be detected. The attacker unwinds exactly 100 (back-run) right after the victim;
+// an incidental later sell (50) must not inflate the back-run total past tolerance.
+func TestDetectSandwichForBundle_TrailingIncidentalBackStillDetected(t *testing.T) {
+	pool := common.HexToHash("0xbbbb222222222222222222222222222222222222000000000000000000000000")
+	bundle := [][]*types.Log{
+		{pancakeV4Log(pool, big.NewInt(50), big.NewInt(-100))}, // attacker front-run: buy 100 token1
+		{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))},  // victim: buy 40 token1
+		{pancakeV4Log(pool, big.NewInt(-50), big.NewInt(100))}, // attacker back-run: sell 100 token1
+		{pancakeV4Log(pool, big.NewInt(-25), big.NewInt(50))},  // incidental third-party sell of 50 token1
+	}
+	if err := DetectSandwichForBundle(bundle); err == nil {
+		t.Fatal("a sandwich followed by an incidental same-direction trade must still be detected")
+	}
+}
+
+// An opposite-direction trade between two same-direction legs breaks the front-run: the
+// two buys (40, 60) are separated by a sell (10) and must NOT be stitched into a 100 that
+// conserves against the back-run (sell 100). Each is its own front-run candidate (40, 60),
+// neither matches 100, so this must not be flagged.
+func TestDetectSandwichForBundle_InterruptedFrontNotStitched(t *testing.T) {
+	pool := common.HexToHash("0xcccc333333333333333333333333333333333333000000000000000000000000")
+	bundle := [][]*types.Log{
+		{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))},  // buy 40 token1
+		{pancakeV4Log(pool, big.NewInt(-5), big.NewInt(10))},   // sell 10 token1 (interrupts the run)
+		{pancakeV4Log(pool, big.NewInt(30), big.NewInt(-60))},  // buy 60 token1
+		{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))},  // victim: buy 40 token1
+		{pancakeV4Log(pool, big.NewInt(-50), big.NewInt(100))}, // sell 100 token1
+	}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("front legs split by an opposite-direction trade must not be stitched, got: %v", err)
+	}
+}
+
+// The symmetric case on the back side: a back-run interrupted by an opposite-direction
+// trade must not be stitched. The sells (60, 40) are separated by a buy (10) and must not
+// be summed into a 100 that conserves against the front-run (buy 100).
+func TestDetectSandwichForBundle_InterruptedBackNotStitched(t *testing.T) {
+	pool := common.HexToHash("0xdddd444444444444444444444444444444444444000000000000000000000000")
+	bundle := [][]*types.Log{
+		{pancakeV4Log(pool, big.NewInt(50), big.NewInt(-100))}, // buy 100 token1
+		{pancakeV4Log(pool, big.NewInt(15), big.NewInt(-30))},  // victim: buy 30 token1
+		{pancakeV4Log(pool, big.NewInt(-30), big.NewInt(60))},  // sell 60 token1
+		{pancakeV4Log(pool, big.NewInt(5), big.NewInt(-10))},   // buy 10 token1 (interrupts the run)
+		{pancakeV4Log(pool, big.NewInt(-20), big.NewInt(40))},  // sell 40 token1
+	}
+	if err := DetectSandwichForBundle(bundle); err != nil {
+		t.Fatalf("back legs split by an opposite-direction trade must not be stitched, got: %v", err)
+	}
+}
+
+// A many-legged reliable-amount pool must still require conservation rather than reverting
+// to direction-only flagging. 17 legs shaped Buy-...-Sell where the front-runs buy 1e6
+// token1 each and the lone sell disposes 1 token1 do not conserve and must not be flagged.
 func TestDetectSandwichForBundle_OverCapNonConservingNotFlagged(t *testing.T) {
 	pool := common.HexToHash("0x4444444444444444444444444444444444444444000000000000000000000000")
 	oneM := big.NewInt(1_000_000)
@@ -680,29 +749,29 @@ func TestDetectSandwichForBundle_OverCapNonConservingNotFlagged(t *testing.T) {
 	// one sell of just 1 token1 (direction F) -> 17 legs, has the T,T,F shape but no conservation
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-1), big.NewInt(1))})
 	if err := DetectSandwichForBundle(bundle); err != nil {
-		t.Fatalf("over-cap pool with the sandwich shape but no conservation must not be flagged, got: %v", err)
+		t.Fatalf("many-legged pool with the sandwich shape but no conservation must not be flagged, got: %v", err)
 	}
 }
 
-// Over the cap, a genuinely conserving sandwich must still be detected: front buys 1000
-// token1, many victims buy, and the back-run sells 1000 token1 back. 17 legs.
+// On a many-legged pool a genuinely conserving sandwich must still be detected: front buys
+// 1000 token1, many victims buy, and the back-run sells 1000 token1 back. 17 legs.
 func TestDetectSandwichForBundle_OverCapConservingStillDetected(t *testing.T) {
 	pool := common.HexToHash("0x5555555555555555555555555555555555555555000000000000000000000000")
 	var bundle [][]*types.Log
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500), big.NewInt(-1000))}) // front: buy 1000 token1
-	for i := 0; i < 15; i++ {                                                                      // 15 victim buys
+	for i := 0; i < 15; i++ {                                                                     // 15 victim buys
 		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))})
 	}
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-480), big.NewInt(1000))}) // back: sell 1000 token1
 	if err := DetectSandwichForBundle(bundle); err == nil {
-		t.Fatal("over-cap conserving sandwich must still be detected")
+		t.Fatal("many-legged conserving sandwich must still be detected")
 	}
 }
 
-// Over the cap, a sandwich whose FRONT-RUN is split across two transactions must still be
-// detected: front buys 500 + 500 token1, victim buys, back sells 1000 token1; filler buys
-// after the victim push the pool past the cap. No single front leg equals the back-run, so
-// only subset matching catches it.
+// A sandwich whose FRONT-RUN is split across two transactions must still be detected:
+// front buys 500 + 500 token1, victim buys, back sells 1000 token1; filler buys after the
+// victim pad the pool. No single front leg equals the back-run, so only summing the two
+// adjacent front legs into one run catches it.
 func TestDetectSandwichForBundle_OverCapSplitFrontStillDetected(t *testing.T) {
 	pool := common.HexToHash("0x6666666666666666666666666666666666666666000000000000000000000000")
 	var bundle [][]*types.Log
@@ -710,17 +779,17 @@ func TestDetectSandwichForBundle_OverCapSplitFrontStillDetected(t *testing.T) {
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(250), big.NewInt(-500))})  // front #2: buy 500 token1
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(20), big.NewInt(-40))})    // victim: buy token1
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-480), big.NewInt(1000))}) // back: sell 1000 token1
-	for i := 0; i < 14; i++ {                                                                      // filler buys after victim -> 18 legs
+	for i := 0; i < 14; i++ {                                                                     // filler buys after victim -> 18 legs
 		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(5), big.NewInt(-10))})
 	}
 	if err := DetectSandwichForBundle(bundle); err == nil {
-		t.Fatal("over-cap sandwich with a split front-run must still be detected")
+		t.Fatal("many-legged sandwich with a split front-run must still be detected")
 	}
 }
 
 // A pool with the sandwich shape but no conservation must not be flagged just because it
-// has many legs. 64 large buys of token1 plus one sell of 1 token1 do not conserve; this
-// exercises the scalable path (below the hard cap) and must not be flagged.
+// has many legs. 64 large buys of token1 plus one sell of 1 token1 do not conserve and
+// must not be flagged.
 func TestDetectSandwichForBundle_ManyLegsNonConservingNotFlagged(t *testing.T) {
 	pool := common.HexToHash("0x7777777777777777777777777777777777777777000000000000000000000000")
 	var bundle [][]*types.Log
@@ -733,33 +802,33 @@ func TestDetectSandwichForBundle_ManyLegsNonConservingNotFlagged(t *testing.T) {
 	}
 }
 
-// Beyond the hard cap the analysis is skipped, but the indeterminate result must not be a
-// false sandwich: a huge non-conserving pool must not be flagged.
+// A very large non-conserving pool must not be flagged: the conservation totals never
+// match, regardless of how many legs share the sandwich shape.
 func TestDetectSandwichForBundle_HardCapNonConservingNotFlagged(t *testing.T) {
 	pool := common.HexToHash("0x8888888888888888888888888888888888888888000000000000000000000000")
 	var bundle [][]*types.Log
-	for i := 0; i < maxLegsHardCap+8; i++ { // exceed the hard cap
+	for i := 0; i < 520; i++ { // many same-direction buy legs
 		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500_000), big.NewInt(-1_000_000))})
 	}
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-1), big.NewInt(1))})
 	if err := DetectSandwichForBundle(bundle); err != nil {
-		t.Fatalf("over-hard-cap non-conserving pool must not be flagged, got: %v", err)
+		t.Fatalf("very large non-conserving pool must not be flagged, got: %v", err)
 	}
 }
 
-// At the edge of the cap a genuinely conserving sandwich must still be detected, so padding
-// a sandwich up to (but not over) the cap cannot hide it: front buys 1000 token1, ~500
-// filler buys, back sells 1000 token1 back.
+// A genuinely conserving sandwich on a large pool must still be detected, so padding a
+// sandwich with many filler trades cannot hide it: front buys 1000 token1, ~500 filler
+// buys, back sells 1000 token1 back.
 func TestDetectSandwichForBundle_LargeConservingStillDetected(t *testing.T) {
 	pool := common.HexToHash("0x9999999999999999999999999999999999999999000000000000000000000000")
 	var bundle [][]*types.Log
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(500), big.NewInt(-1000))}) // front: buy 1000 token1
-	for i := 0; i < 500; i++ {                                                                     // filler buys (n=502, under the cap)
+	for i := 0; i < 500; i++ {                                                                    // filler buys (502 legs total)
 		bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(5), big.NewInt(-10))})
 	}
 	bundle = append(bundle, []*types.Log{pancakeV4Log(pool, big.NewInt(-480), big.NewInt(1000))}) // back: sell 1000 token1
 	if err := DetectSandwichForBundle(bundle); err == nil {
-		t.Fatal("a conserving sandwich padded up to the cap must still be detected")
+		t.Fatal("a conserving sandwich padded with filler trades must still be detected")
 	}
 }
 
@@ -828,5 +897,34 @@ func TestDetectSandwichForBundle_DodoRoundTripNotFlagged(t *testing.T) {
 	bundle := [][]*types.Log{roundTrip, buy(), buy()}
 	if err := DetectSandwichForBundle(bundle); err != nil {
 		t.Fatalf("DODO round-trip + two buys [_,T,T] must not be flagged, got: %v", err)
+	}
+}
+
+// hasDirectionalPattern is the direction-only fallback for unreliable pools (DODO,
+// FourMeme); this pins its Buy-Buy-Sell (T,T,F) / Sell-Sell-Buy (F,F,T) detection.
+func TestHasDirectionalPattern(t *testing.T) {
+	T, F := true, false
+	cases := []struct {
+		name string
+		dirs []bool
+		want bool
+	}{
+		{"buy-buy-sell", []bool{T, T, F}, true},
+		{"sell-sell-buy", []bool{F, F, T}, true},
+		{"too-short", []bool{T, F}, false},
+		{"buy-sell-buy", []bool{T, F, T}, false},
+		{"all-buys", []bool{T, T, T}, false},
+		{"all-sells", []bool{F, F, F}, false},
+		{"backrun-shape", []bool{T, F, F, F, F}, false},
+		{"interrupted-ssb", []bool{F, T, F, T, T}, true}, // testCase2 directions
+		{"pattern-deep-in", []bool{F, F, F, F, T}, true},
+		{"empty", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := hasDirectionalPattern(c.dirs); got != c.want {
+				t.Errorf("hasDirectionalPattern(%v) = %v, want %v", c.dirs, got, c.want)
+			}
+		})
 	}
 }
